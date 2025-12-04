@@ -2,7 +2,17 @@ import numpy as np
 import pandas as pd 
 import torch
 from data import get_data
-from util import vol_est_arr, likelihood
+from vol_est import vol_est_arr
+
+def likelihood(vol_est_arr, rv_arr, backend=torch):
+    # Likelihood function for estimated == realized
+    ll1 = backend.log(vol_est_arr) + rv_arr / vol_est_arr
+    # prevent divergence in vol < epsilon
+    epsilon = 1e-12
+    # ll2 = (1 / epsilon - rv_arr / epsilon / epsilon) * vol_est_arr + (1 + rv_arr / epsilon)
+    ll2 = (1 / epsilon - rv_arr / epsilon / epsilon) * vol_est_arr + (float(np.log(epsilon)) + rv_arr / epsilon)
+    ll = backend.where(vol_est_arr>epsilon, ll1, ll2)
+    return -backend.sum(ll)
 
 def optimize_2param(rv_arr, init_params=(1e-3,1e-3,0.0), iter=1000, device=torch.device("cpu")):
     # Optimze gamma and beta. set omega = 0
@@ -22,7 +32,7 @@ def optimize_2param(rv_arr, init_params=(1e-3,1e-3,0.0), iter=1000, device=torch
     params_log = {"gamma":vol_coef.item(), "beta_g":rv_coef.item(), "omega_g":resid.item()}
     return params, params_log, next_est.item(), loss.item()
 
-def optimize_3param(rv_arr, init_params=(0,0.5,1e-3), iter=1000, device=torch.device("cpu")):
+def optimize_3param(rv_arr, init_params=(0.5,0.5,1e-3), iter=1000, device=torch.device("cpu")):
     # Optimze gamma, beta, and omega
     backend=torch
     _omega, _beta, _gamma = [torch.tensor(x, requires_grad=True) for x in init_params]
@@ -43,6 +53,46 @@ def optimize_3param(rv_arr, init_params=(0,0.5,1e-3), iter=1000, device=torch.de
     params = (_omega.item(), _beta.item(), _gamma.item())
     params_log = {"gamma":vol_coef.item(), "beta_g":rv_coef.item(), "omega_g":resid.item()}
     return params, params_log, next_est.item(), loss.item()
+
+
+def optimize_4param(rv_arr, init_params=(0.1,0,0,0), iter=1000, device=torch.device("cpu")):
+    # Optimze omega, alpha, gamma, nu
+    backend=torch
+    # https://arxiv.org/pdf/1907.01175
+    _omega, _alpha, _gamma, _nu = [torch.tensor(x, requires_grad=True) for x in init_params]
+    opt = torch.optim.Adagrad([_omega, _alpha, _gamma, _nu], lr=1e-2)
+    for epoch in range(iter):
+        opt.zero_grad()
+        # Page 7
+        omega = torch.relu(_omega)
+        alpha = torch.sigmoid(_alpha)
+        gamma = torch.sigmoid(_gamma)
+        nu =  torch.sigmoid(_nu)
+
+        exp_alpha = torch.exp(alpha)    
+        rho1 = (exp_alpha - 1.) / alpha
+        rho2 = (exp_alpha - 1. - alpha) / alpha / alpha
+        rho3 = (exp_alpha - 1. - alpha - alpha * alpha * 0.5) / (alpha*alpha*alpha)
+        
+        alpha_g = (rho1 - rho2 + 2. * gamma * rho3) * alpha
+        # beta_g = 0
+        og1 = (rho1 - rho2 + 2. * rho3) * omega # omega = gamma omega1 - omega2
+        og2 = (1. - gamma) * (rho2 - 2. * rho3) * nu 
+        omega_g = og1 + og2
+
+        vol_coef = gamma
+        rv_coef = alpha_g
+        resid = omega_g
+        historical_est, next_est = vol_est_arr(rv_arr, vol_coef, rv_coef, resid, backend=backend, device=device) # It looks like a RNN 
+        loss = -likelihood(historical_est, rv_arr, backend=backend)
+        loss.backward()
+        opt.step()
+        # print(_omega, _alpha, _gamma, _nu)
+        # print(f"[{epoch}] loss:{loss.item():.2e}, params:{vol_coef.item():.2e}, {rv_coef.item():.2e}, {resid.item():.2e}, est:{next_est.item():.2e}")
+    params = (_omega.item(), _alpha.item(), _gamma.item(), _nu.item())
+    params_log = {"gamma":vol_coef.item(), "beta_g":rv_coef.item(), "omega_g":resid.item()}
+    return params, params_log, next_est.item(), loss.item()
+
 
 def loop(rv_estimate_fn, optimize_fn, save_name, initial_param, iter=200):
     backend = torch
