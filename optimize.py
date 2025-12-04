@@ -87,7 +87,7 @@ def optimize_4param(rv_arr, init_params=(0.1,0,0,0), iter=1000, device=torch.dev
         loss = -likelihood(historical_est, rv_arr, backend=backend)
         loss.backward()
         opt.step()
-        # print(_omega, _alpha, _gamma, _nu)
+        # print(_omega.item(), _alpha.item(), _gamma.item(), _nu.item())
         # print(f"[{epoch}] loss:{loss.item():.2e}, params:{vol_coef.item():.2e}, {rv_coef.item():.2e}, {resid.item():.2e}, est:{next_est.item():.2e}")
     params = (_omega.item(), _alpha.item(), _gamma.item(), _nu.item())
     params_log = {"gamma":vol_coef.item(), "beta_g":rv_coef.item(), "omega_g":resid.item()}
@@ -97,10 +97,10 @@ def optimize_4param(rv_arr, init_params=(0.1,0,0,0), iter=1000, device=torch.dev
 def loop(rv_estimate_fn, optimize_fn, save_name, initial_param, iter=200):
     backend = torch
     device = torch.device("cpu")
-    df = get_data()
+    df = get_data().loc["2023-11":"2025-11"]
     rv_arr_all = rv_estimate_fn(df, backend=backend, device=device)
     est_rv = dict()
-    lookback = 250
+    lookback = 500
     params = initial_param
     for i in range(lookback,len(rv_arr_all)):
         rv_arr = rv_arr_all[i-lookback:i]
