@@ -3,6 +3,7 @@ import pandas as pd
 import torch
 from data import get_data
 from vol_est import vol_est_arr
+from vol_realized import rv_preaveraged, rv_daily
 
 def likelihood(vol_est_arr, rv_arr, backend=torch):
     # Likelihood function for estimated == realized
@@ -14,7 +15,7 @@ def likelihood(vol_est_arr, rv_arr, backend=torch):
     ll = backend.where(vol_est_arr>epsilon, ll1, ll2)
     return -backend.sum(ll)
 
-def optimize_2param(rv_arr, init_params=(1e-3,1e-3,0.0), iter=1000, device=torch.device("cpu")):
+def optimize_2param(r2_arr_fitting, r2_arr_pred, init_params=(1e-3,1e-3,0.0), iter=1000, device=torch.device("cpu")):
     # Optimze gamma and beta. set omega = 0
     backend=torch
     vol_coef, rv_coef, resid = [torch.tensor(x, requires_grad=True) for x in init_params]
@@ -23,8 +24,8 @@ def optimize_2param(rv_arr, init_params=(1e-3,1e-3,0.0), iter=1000, device=torch
     opt = torch.optim.Adam([vol_coef, rv_coef], lr=1e-2)
     for epoch in range(iter):
         opt.zero_grad()
-        historical_est, next_est = vol_est_arr(rv_arr, vol_coef, rv_coef, resid, backend=backend, device=device) # It looks like a RNN 
-        loss = -likelihood(historical_est, rv_arr, backend=backend)
+        historical_est, next_est = vol_est_arr(r2_arr_pred, vol_coef, rv_coef, resid, backend=backend, device=device) # It looks like a RNN 
+        loss = -likelihood(historical_est, r2_arr_fitting, backend=backend)
         loss.backward()
         opt.step()
         #print(f"[{epoch}] loss:{loss.item():.2e}, params:{vol_coef.item():.2e}, {rv_coef.item():.2e}, {resid.item():.2e}, est:{next_est.item():.2e}")
@@ -32,7 +33,7 @@ def optimize_2param(rv_arr, init_params=(1e-3,1e-3,0.0), iter=1000, device=torch
     params_log = {"gamma":vol_coef.item(), "beta_g":rv_coef.item(), "omega_g":resid.item()}
     return params, params_log, next_est.item(), loss.item()
 
-def optimize_3param(rv_arr, init_params=(0.5,0.5,1e-3), iter=1000, device=torch.device("cpu")):
+def optimize_3param(r2_arr_fitting, r2_arr_pred, init_params=(0.5,0.5,1e-3), iter=1000, device=torch.device("cpu")):
     # Optimze gamma, beta, and omega
     backend=torch
     _omega, _beta, _gamma = [torch.tensor(x, requires_grad=True) for x in init_params]
@@ -45,8 +46,8 @@ def optimize_3param(rv_arr, init_params=(0.5,0.5,1e-3), iter=1000, device=torch.
         vol_coef = gamma
         rv_coef = (gamma-1)/beta*(torch.exp(beta)-1-beta)+torch.exp(beta)-1
         resid = (torch.exp(beta)-1)*torch.square(omega)/beta
-        historical_est, next_est = vol_est_arr(rv_arr, vol_coef, rv_coef, resid, backend=backend, device=device) # It looks like a RNN 
-        loss = -likelihood(historical_est, rv_arr, backend=backend)
+        historical_est, next_est = vol_est_arr(r2_arr_pred, vol_coef, rv_coef, resid, backend=backend, device=device) # It looks like a RNN 
+        loss = -likelihood(historical_est, r2_arr_fitting, backend=backend)
         loss.backward()
         opt.step()
         # print(f"[{epoch}] loss:{loss.item():.2e}, params:{vol_coef.item():.2e}, {rv_coef.item():.2e}, {resid.item():.2e}, est:{next_est.item():.2e}")
@@ -55,7 +56,7 @@ def optimize_3param(rv_arr, init_params=(0.5,0.5,1e-3), iter=1000, device=torch.
     return params, params_log, next_est.item(), loss.item()
 
 
-def optimize_4param(rv_arr, init_params=(0.1,0,0,0), iter=1000, device=torch.device("cpu")):
+def optimize_4param(r2_arr_fitting, r2_arr_pred, init_params=(0.1,0,0,0), iter=1000, device=torch.device("cpu")):
     # Optimze omega, alpha, gamma, nu
     backend=torch
     # https://arxiv.org/pdf/1907.01175
@@ -83,8 +84,8 @@ def optimize_4param(rv_arr, init_params=(0.1,0,0,0), iter=1000, device=torch.dev
         vol_coef = gamma
         rv_coef = alpha_g
         resid = omega_g
-        historical_est, next_est = vol_est_arr(rv_arr, vol_coef, rv_coef, resid, backend=backend, device=device) # It looks like a RNN 
-        loss = -likelihood(historical_est, rv_arr, backend=backend)
+        historical_est, next_est = vol_est_arr(r2_arr_pred, vol_coef, rv_coef, resid, backend=backend, device=device) # It looks like a RNN 
+        loss = -likelihood(historical_est, r2_arr_fitting, backend=backend)
         loss.backward()
         opt.step()
         # print(_omega.item(), _alpha.item(), _gamma.item(), _nu.item())
@@ -94,19 +95,27 @@ def optimize_4param(rv_arr, init_params=(0.1,0,0,0), iter=1000, device=torch.dev
     return params, params_log, next_est.item(), loss.item()
 
 
-def loop(rv_estimate_fn, optimize_fn, save_name, initial_param, iter=200):
+def loop(rv_estimate_fn_fitting, rv_estimate_fn_pred, optimize_fn, save_name, initial_param, iter=200):
+    # rv_estimate_fn_fitting # rv used for QMLE
+    # rv_estimate_fn_pred # rv used for GARCH prediction
     backend = torch
     device = torch.device("cpu")
     df = get_data().loc["2023-11":"2025-11"]
-    rv_arr_all = rv_estimate_fn(df, backend=backend, device=device)
+    rv_arr_all_PRV = rv_preaveraged(df, backend=backend, device=device)
+    rv_arr_all_DailyRV = rv_daily(df, backend=backend, device=device)
+    rvs = {rv_preaveraged:rv_arr_all_PRV, rv_daily:rv_arr_all_DailyRV}
+    rv_arr_all_fitting = rvs[rv_estimate_fn_fitting]
+    rv_arr_all_pred = rvs[rv_estimate_fn_pred]
     est_rv = dict()
     lookback = 500
     params = initial_param
-    for i in range(lookback,len(rv_arr_all)):
-        rv_arr = rv_arr_all[i-lookback:i]
-        params, params_log, vol_pred, loss = optimize_fn(rv_arr, init_params=params, device=device, iter=iter)
+    for i in range(lookback,len(rv_arr_all_fitting)):
+        rv_arr_fitting = rv_arr_all_fitting[i-lookback:i]
+        rv_arr_pred = rv_arr_all_pred[i-lookback:i]
+        params, params_log, vol_pred, loss = optimize_fn(rv_arr_fitting, rv_arr_pred, init_params=params, device=device, iter=iter)
         est_rv[i] = params_log
-        est_rv[i].update({"vol_pred":vol_pred, "vol_real":rv_arr_all[i].item(), "loss":loss})
+        est_rv[i].update({"vol_pred":vol_pred, "vol_true_PRV":rv_arr_all_PRV[i].item(), "vol_true_DailyRV":rv_arr_all_DailyRV[i].item(), "loss":loss})
+        # print(f"prv:{rv_arr_fitting[-1]}, drv:{rv_arr_pred[-1]}") # 1250
         print(" ".join([f"{k}:{v:.2e}" for k,v in est_rv[i].items()]))
         if i%10 == 0:
             result = pd.DataFrame(est_rv).T

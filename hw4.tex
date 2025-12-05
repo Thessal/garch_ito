@@ -55,37 +55,32 @@
 \end{itemize}
 
 \section{Results}
-\begin{itemize}
-    \item Daily GARCH model shows highest MSPE error. 
-    \item Unified GARCH-Ito and Realized GARCH-Ito model shows improvements over the daily model.
-    \item Realized GARCH-Ito have room for improvements if the optimization epoch is increased and jump variance is considered.
-\end{itemize}
+% \begin{itemize}
+%     \item Daily GARCH model shows highest MSPE error. 
+%     \item Unified GARCH-Ito and Realized GARCH-Ito model shows improvements over the daily model.
+%     \item Realized GARCH-Ito have room for improvements if the optimization epoch is increased and jump variance is considered.
+% \end{itemize}
 
-\begin{center}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.3\linewidth]{full.png}
+    \includegraphics[width=0.4\linewidth]{mspe.png}
+    \caption{ Estimated volatility and MSPE }
+    % \includegraphics[width=0.3\linewidth]{last50.png}\\
+\end{figure}
+
+
 \begin{table}[!thbp]
+\begin{center}
 \begin{tabular}{|c|r|r|r|r|}
 \hline
-\multicolumn{1}{|c|}{Model}   & \multicolumn{1}{c|} {RV estimator} & \multicolumn{1}{c|}{Optimization parameter} & \multicolumn{1}{c|}{MSPE Error(full)} & \multicolumn{1}{c|}{MSPE Error(last 50 days)} \\ \hline
-\textbf{GARCH}                         &           PRV                      &                    $\alpha, \gamma$           &     5.24e-12   &       \textbf{ 7.43e-12  }                     \\ \hline
-\textbf{Unified GARCH-Ito }            &           PRV                      &             $\omega, \alpha, \gamma$         &      3.20e-12   &       \textbf{3.30e-12   }                     \\ \hline
-\textbf{Realized GARCH-Ito }           &           PRV                      &             $\omega, \alpha, \gamma, \nu$     &     5.25e-07   &       \textbf{2.68e-12  }                     \\ \hline
+\multicolumn{1}{|c|}{Model}   & MSPE  \\ \hline
+\textbf{GARCH}                &  \textbf{2.244e-07  }                     \\ \hline
+\textbf{Unified GARCH-Ito }   &  \textbf{2.345e-07  }                     \\ \hline
+\textbf{Realized GARCH-Ito }  &  \textbf{2.402e-07  }                     \\ \hline
 \end{tabular}
-\end{table}
 \end{center}
-
-\begin{figure}[H]
-    \centering
-     \includegraphics[width=0.3\linewidth]{full.png}
-    \includegraphics[width=0.3\linewidth]{last50.png}\\
-    \caption{estimated volatlity (left : 250 days, right: 50 days )}
-\end{figure}
-
-\begin{figure}[H]
-    \centering
-    \includegraphics[width=0.4\linewidth]{mspe.png}
-    \caption{Last 50 day MSPE comparison}
-\end{figure}
-
+\end{table}
 
 \section{Code}
 
@@ -98,6 +93,7 @@ import pandas as pd
 import torch
 from data import get_data
 from vol_est import vol_est_arr
+from vol_realized import rv_preaveraged, rv_daily
 
 def likelihood(vol_est_arr, rv_arr, backend=torch):
     # Likelihood function for estimated == realized
@@ -109,25 +105,7 @@ def likelihood(vol_est_arr, rv_arr, backend=torch):
     ll = backend.where(vol_est_arr>epsilon, ll1, ll2)
     return -backend.sum(ll)
 
-def optimize_2param(rv_arr, init_params=(1e-3,1e-3,0.0), iter=1000, device=torch.device("cpu")):
-    # Optimze gamma and beta. set omega = 0
-    backend=torch
-    vol_coef, rv_coef, resid = [torch.tensor(x, requires_grad=True) for x in init_params]
-    resid = torch.tensor(0., requires_grad=True)
-    # opt = torch.optim.Adam([vol_coef, rv_coef, resid], lr=1e-3)
-    opt = torch.optim.Adam([vol_coef, rv_coef], lr=1e-2)
-    for epoch in range(iter):
-        opt.zero_grad()
-        historical_est, next_est = vol_est_arr(rv_arr, vol_coef, rv_coef, resid, backend=backend, device=device) # It looks like a RNN 
-        loss = -likelihood(historical_est, rv_arr, backend=backend)
-        loss.backward()
-        opt.step()
-        #print(f"[{epoch}] loss:{loss.item():.2e}, params:{vol_coef.item():.2e}, {rv_coef.item():.2e}, {resid.item():.2e}, est:{next_est.item():.2e}")
-    params = (vol_coef.item(), rv_coef.item(), resid.item())
-    params_log = {"gamma":vol_coef.item(), "beta_g":rv_coef.item(), "omega_g":resid.item()}
-    return params, params_log, next_est.item(), loss.item()
-
-def optimize_3param(rv_arr, init_params=(0.5,0.5,1e-3), iter=1000, device=torch.device("cpu")):
+def optimize_3param(r2_arr_fitting, r2_arr_pred, init_params=(0.5,0.5,1e-3), iter=1000, device=torch.device("cpu")):
     # Optimze gamma, beta, and omega
     backend=torch
     _omega, _beta, _gamma = [torch.tensor(x, requires_grad=True) for x in init_params]
@@ -140,8 +118,8 @@ def optimize_3param(rv_arr, init_params=(0.5,0.5,1e-3), iter=1000, device=torch.
         vol_coef = gamma
         rv_coef = (gamma-1)/beta*(torch.exp(beta)-1-beta)+torch.exp(beta)-1
         resid = (torch.exp(beta)-1)*torch.square(omega)/beta
-        historical_est, next_est = vol_est_arr(rv_arr, vol_coef, rv_coef, resid, backend=backend, device=device) # It looks like a RNN 
-        loss = -likelihood(historical_est, rv_arr, backend=backend)
+        historical_est, next_est = vol_est_arr(r2_arr_pred, vol_coef, rv_coef, resid, backend=backend, device=device) # It looks like a RNN 
+        loss = -likelihood(historical_est, r2_arr_fitting, backend=backend)
         loss.backward()
         opt.step()
         # print(f"[{epoch}] loss:{loss.item():.2e}, params:{vol_coef.item():.2e}, {rv_coef.item():.2e}, {resid.item():.2e}, est:{next_est.item():.2e}")
@@ -150,58 +128,27 @@ def optimize_3param(rv_arr, init_params=(0.5,0.5,1e-3), iter=1000, device=torch.
     return params, params_log, next_est.item(), loss.item()
 
 
-def optimize_4param(rv_arr, init_params=(0.1,0,0,0), iter=1000, device=torch.device("cpu")):
-    # Optimze omega, alpha, gamma, nu
-    backend=torch
-    # https://arxiv.org/pdf/1907.01175
-    _omega, _alpha, _gamma, _nu = [torch.tensor(x, requires_grad=True) for x in init_params]
-    opt = torch.optim.Adagrad([_omega, _alpha, _gamma, _nu], lr=1e-2)
-    for epoch in range(iter):
-        opt.zero_grad()
-        # Page 7
-        omega = torch.relu(_omega)
-        alpha = torch.sigmoid(_alpha)
-        gamma = torch.sigmoid(_gamma)
-        nu =  torch.sigmoid(_nu)
-
-        exp_alpha = torch.exp(alpha)    
-        rho1 = (exp_alpha - 1.) / alpha
-        rho2 = (exp_alpha - 1. - alpha) / alpha / alpha
-        rho3 = (exp_alpha - 1. - alpha - alpha * alpha * 0.5) / (alpha*alpha*alpha)
-        
-        alpha_g = (rho1 - rho2 + 2. * gamma * rho3) * alpha
-        # beta_g = 0
-        og1 = (rho1 - rho2 + 2. * rho3) * omega # omega = gamma omega1 - omega2
-        og2 = (1. - gamma) * (rho2 - 2. * rho3) * nu 
-        omega_g = og1 + og2
-
-        vol_coef = gamma
-        rv_coef = alpha_g
-        resid = omega_g
-        historical_est, next_est = vol_est_arr(rv_arr, vol_coef, rv_coef, resid, backend=backend, device=device) # It looks like a RNN 
-        loss = -likelihood(historical_est, rv_arr, backend=backend)
-        loss.backward()
-        opt.step()
-        # print(_omega.item(), _alpha.item(), _gamma.item(), _nu.item())
-        # print(f"[{epoch}] loss:{loss.item():.2e}, params:{vol_coef.item():.2e}, {rv_coef.item():.2e}, {resid.item():.2e}, est:{next_est.item():.2e}")
-    params = (_omega.item(), _alpha.item(), _gamma.item(), _nu.item())
-    params_log = {"gamma":vol_coef.item(), "beta_g":rv_coef.item(), "omega_g":resid.item()}
-    return params, params_log, next_est.item(), loss.item()
-
-
-def loop(rv_estimate_fn, optimize_fn, save_name, initial_param, iter=200):
+def loop(rv_estimate_fn_fitting, rv_estimate_fn_pred, optimize_fn, save_name, initial_param, iter=200):
+    # rv_estimate_fn_fitting # rv used for QMLE
+    # rv_estimate_fn_pred # rv used for GARCH prediction
     backend = torch
     device = torch.device("cpu")
     df = get_data().loc["2023-11":"2025-11"]
-    rv_arr_all = rv_estimate_fn(df, backend=backend, device=device)
+    rv_arr_all_PRV = rv_preaveraged(df, backend=backend, device=device)
+    rv_arr_all_DailyRV = rv_daily(df, backend=backend, device=device)
+    rvs = {rv_preaveraged:rv_arr_all_PRV, rv_daily:rv_arr_all_DailyRV}
+    rv_arr_all_fitting = rvs[rv_estimate_fn_fitting]
+    rv_arr_all_pred = rvs[rv_estimate_fn_pred]
     est_rv = dict()
     lookback = 500
     params = initial_param
-    for i in range(lookback,len(rv_arr_all)):
-        rv_arr = rv_arr_all[i-lookback:i]
-        params, params_log, vol_pred, loss = optimize_fn(rv_arr, init_params=params, device=device, iter=iter)
+    for i in range(lookback,len(rv_arr_all_fitting)):
+        rv_arr_fitting = rv_arr_all_fitting[i-lookback:i]
+        rv_arr_pred = rv_arr_all_pred[i-lookback:i]
+        params, params_log, vol_pred, loss = optimize_fn(rv_arr_fitting, rv_arr_pred, init_params=params, device=device, iter=iter)
         est_rv[i] = params_log
-        est_rv[i].update({"vol_pred":vol_pred, "vol_real":rv_arr_all[i].item(), "loss":loss})
+        est_rv[i].update({"vol_pred":vol_pred, "vol_true_PRV":rv_arr_all_PRV[i].item(), "vol_true_DailyRV":rv_arr_all_DailyRV[i].item(), "loss":loss})
+        # print(f"prv:{rv_arr_fitting[-1]}, drv:{rv_arr_pred[-1]}") # 1250
         print(" ".join([f"{k}:{v:.2e}" for k,v in est_rv[i].items()]))
         if i%10 == 0:
             result = pd.DataFrame(est_rv).T
@@ -260,19 +207,6 @@ def rv_daily(df, backend=torch, device="cpu"):
     elif backend==np:
         return xi_sq
 
-def rv_naive(df, backend=torch, device="cpu"):
-    # RV estimation without pre-averaging
-    logret = np.log(df["close"]).diff()
-    logret = logret - logret.mean()
-    logret = logret.resample("1D").transform(lambda x: np.clip(x-x.mean(),-x.std(),x.std()))
-    rv = logret.pow(2).resample("1D").mean()
-    # adjust to daily vol
-    N = 60*60*24
-    rv = rv.multiply(N).values
-    if backend==torch:
-        return torch.Tensor(rv).to(device)
-    elif backend==np:
-        return rv
 
 def rv_preaveraged(df, backend=torch, device="cpu"):
     # Preaveraged RV
@@ -304,227 +238,5 @@ def rv_preaveraged(df, backend=torch, device="cpu"):
     
 
 \end{python}
-% GARCH(1,1), Daily             &          Daily RV                  &                    $\alpha, \gamma$         &                                 \\ \hline
-% Unified GARCH-Ito             &          Naive RV                  &             $\omega, \alpha, \gamma$        &                                 \\ \hline
-% Realized GARCH-Ito            &          Naive RV                  &             $\omega, \alpha, \gamma, \nu$   &                                 \\ \hline
-
-
-% Show that $\sum_{i=1}^n \left[\frac{1}{2} f_{tt} \left( t_{i-1}, B_{t_{i-1}} \right) \Delta_{t_i}^2 + f_{tB} \left(t_{i-1}, B_{t_i-1}\right) \Delta_{t_i} \Delta_{B_{t_i}} \right] \overset{p}\to 0$ as $n\to \infty$\\
-% $\Delta_{t_i} = \frac{1}{n}$\\
-% ~\\
-% ~\\
-% $ \sum_{i=1}^n \left[\frac{1}{2} f_{tt}  \Delta_{t_i}^2 + f_{tB} \Delta_{t_i} \Delta_{B_{t_i}} \right] $\\
-% $ = \sum_{i=1}^n\left[ \frac{1}{2} f_{tt} \Delta_{t_i}^2\right] + \sum_{i=1}^n\left[ f_{tB} \Delta_{t_i} \Delta_{B_{t_i}} \right] = A + B$\\
-% ~\\
-% $E[A^2] = \sum_{i=1}^nE\left[ \frac{1}{4} f_{tt}^2 \Delta_{t_i}^4\right] + \sum_{i\neq j}E\left[ \frac{1}{4} f_{tt, i}  f_{tt, j} \Delta_{t_i}^2 \Delta_{t_j}^2 \right] $\\
-% $=
-% \frac{1}{4}  \sum_{i=1}^n E\left[f_{tt}^2  E\left[\Delta_{t_i}^4 | \mathcal{F}_{t_{i-1}} \right] \right]  +
-% \frac{1}{4} \sum_{i< j} E\left[  f_{tt, i}   E\left[f_{tt, j} \Delta_{t_i}^2 E\left[   \Delta_{t_j}^2  |\mathcal{F}_{t_{j-1}}  \right] |\mathcal{F}_{t_{i-1}} \right] \right] +
-% \frac{1}{4} \sum_{i> j} E\left[    f_{tt, j} E\left[f_{tt, i}  \Delta_{t_j}^2  E\left[ \Delta_{t_i}^2   |\mathcal{F}_{t_{i-1}}  \right] |\mathcal{F}_{t_{j-1}} \right] \right]$\\
-% $ \leq  \frac{1}{4}  \sum_{i=1}^n  \sum_{j=1}^n E\left[ (\max f_{tt,i} \max f_{tt,j} \max \Delta_{t_i} \max \Delta_{t_j} )\Delta_{t_i}\Delta_{t_j}\right]   =  \frac{1}{4} (\max f_{tt})^2 (\frac{1}{n})^2 E\left[ \sum_1^n \sum_1^n (\frac{1}{n})^2\right]= \frac{1}{4} (\max f_{tt})^2 (\frac{1}{n})^2 \to 0 $\\
-% ~\\
-% $E[B^2] = \sum_{i=1}^n E\left[ f_{tB}^2 \Delta_{t_i}^2 \Delta_{B_{t_i}}^2  \right] + \sum_{i\neq j}E\left[ f_{tB,i}f_{tB,j}\Delta_{t_i} \Delta_{t_j}\Delta_{B_{t_i}}\Delta_{B_{t_j}}  \right]$\\
-% $=  \sum_{i=1}^n E\left[ f_{tB}^2 \frac{1}{n^2} E\left[\Delta_{B_{t_i}}^2|\mathcal{F}_{t_{i-1}}\right] \right] + 
-% \sum_{i\neq j} E\left[ f_{tB,i} f_{tB,j} \frac{1}{n^2} E\left[\Delta_{B_{t_i}}|\mathcal{F}_{t_{i-1}} \right] E\left[\Delta_{B_{t_j}}|\mathcal{F}_{t_{j-1}} \right]  \right] $\\
-% $=  \sum_{i=1}^n E\left[ f_{tB}^2 \frac{1}{n^2} E\left[\Delta_{B_{t_i}}^2|\mathcal{F}_{t_{i-1}}\right] \right] + 0$
-% $ \leq  \sum_{i=1}^n  E\left[ (\max f_{tB,i} \max f_{tB,j} \frac{1}{n^2}) \frac{1}{n}\right]  =  (\max f_{tB})^2 (\frac{1}{n})^2 \to 0 $\\
-% \\
-% $P(|A|>\epsilon/2)= 0 $ and $P(|B|>\epsilon/2)= 0 $ as $n \to \infty $\\
-% So, $P(|A+B| > \epsilon) = 0 $ as $n \to \infty$\\
-% Therefore, $A+B = \sum_{i=1}^n \left[\frac{1}{2} f_{tt} \left( t_{i-1}, B_{t_{i-1}} \right) \Delta_{t_i}^2 + f_{tB} \left(t_{i-1}, B_{t_i-1}\right) \Delta_{t_i} \Delta_{B_{t_i}} \right] \overset{p}\to 0$ as $n\to \infty$\\
-% % Let $ X_n = \sum_{i=1}^n \left[\frac{1}{2} f_{tt} \left( t_{i-1}, B_{t_{i-1}} \right) \Delta_{t_i}^2 + f_{tB} \left(t_{i-1}, B_{t_i-1}\right) \Delta_{t_i} \Delta_{B_{t_i}} \right]  $\\
-% % $E[X_n^2]= E\left[
-% % \sum_{i=1}^{n}\left(\frac{1}{2} f_{tt} \Delta_{t_i}^2 + f_{tB}  \Delta_{t_i} \Delta_{B_{t_i}} \right)^2 + 
-% % \sum_{i\neq j}\left(\frac{1}{2} f_{tt} \Delta_{t_i}^2 + f_{tB}  \Delta_{t_i} \Delta_{B_{t_i}} \right)\left(\frac{1}{2} f_{tt} \Delta_{t_j}^2 + f_{tB}  \Delta_{t_j} \Delta_{B_{t_j}} \right)
-% % \right]$\\
-% % $= 
-% % \sum_{i=1}^{n}E\left[\left(\frac{1}{2} f_{tt} \Delta_{t_i}^2 + f_{tB}  \Delta_{t_i} \Delta_{B_{t_i}} \right)^2\right]+ 
-% % \sum_{i\neq j}E\left[\left(\frac{1}{2} f_{tt} \Delta_{t_i}^2 + f_{tB}  \Delta_{t_i} \Delta_{B_{t_i}} \right)\left(\frac{1}{2} f_{tt} \Delta_{t_j}^2 + f_{tB}  \Delta_{t_j} \Delta_{B_{t_j}} \right)\right]
-% % $
-% ~\\
-% % $ E[A] \sum_{i=1}^n \left[\frac{1}{2} f_{tt} \left( t_{i-1}, B_{t_{i-1}} \right) \Delta_{t_i}^2 \right]$ 
-% ~\\
-% \textbf{Problem 2 }\\
-% ~\\
-% Show that $\sum_{j=1}^n \Delta_{B_{t_j}}^2$ converges to t in probability, as $n\rightarrow \infty$\\
-% ( $t_j = \frac{j}{n} t$ )\\
-% ~\\
-% ~\\
-% Let $X_n$ = (LHS) - (RHS)\\
-% $X_n = \sum_{j=1}^n  \left(\Delta_{B_{t_j}}^2 - \Delta t\right) = \sum_{j=1}^n  \left(\Delta_{B_{t_j}}^2 - \frac{t}{n}\right)$ \\
-% ~\\
-% Then,\\
-% $E[X_n^2] =E\left[ \sum_{i=1}^n \left(\Delta_{B_{t_i}}^2 - \frac{t}{n}\right)  \sum_{j=1}^n \left(\Delta_{B_{t_j}}^2 - \frac{t}{n}\right) \right] $\\
-% $ = \sum_{i=1}^n \sum_{j=1}^n E\left[\left(\Delta_{B_{t_i}}^2 - \frac{t}{n}\right)   \left(\Delta_{B_{t_j}}^2 - \frac{t}{n}\right) \right]$ = (cross terms) + (diagonal terms)\\
-% ~\\
-% 1) Cross terms ($i\neq j)$:\\
-% Independent increments gives \\
-% $E\left[\left(\Delta_{B_{t_j}}^2 - \frac{t}{n}\right)   \left(\Delta_{B_{t_j}}^2 - \frac{t}{n}\right) \right] = E\left[\left(\Delta_{B_{t_j}}^2 - \frac{t}{n}\right)\right]  E\left[ \left(\Delta_{B_{t_j}}^2 - \frac{t}{n}\right) \right]$\\
-% $= \left(E\left[\Delta_{B_{t_i}}^2\right] - \mathrm{Var}\left[\Delta_{B_{t_i}}\right]\right)  \left(E\left[\Delta_{B_{t_j}}^2\right] - \mathrm{Var}\left[\Delta_{B_{t_j}}\right]\right) = 0 \cdot 0 = 0$\\
-% ~\\
-% 2) Diagonal terms ($i = j)$:\\
-% $  E\left[\sum_{j=1}^n \left( \left(\Delta_{B_{t_j}}^2 - \frac{t}{n}\right)   \left(\Delta_{B_{t_j}}^2 - \frac{t}{n}\right) \right)\right] =E\left[ \sum_{j=1}^n \left(\Delta_{B_{t_j}}^4 + \left(\frac{t}{n}\right)^2 - \frac{2t}{n}\left( \Delta_{B_{t_j}}^2\right)\right)\right]$\\
-% $=   \sum_{j=1}^n \left(E\left[\Delta_{B_{t_j}}^4\right] + \left(\frac{t}{n}\right)^2 - \frac{2t}{n}\left( E\left[\Delta_{B_{t_j}}^2\right]\right)\right)$\\
-% $= n\left( 3\left(\frac{t}{n}\right)^2 + \left(\frac{t}{n}\right)^2 - \frac{2t}{n}\left( \frac{t}{n} \right)\right) = \frac{3t^2}{n} +\frac{t^2}{n} - \frac{2t^2}{n} \rightarrow 0$  as $n\rightarrow \infty$\\
-% (Because $\Delta_{B_{t_j}}\sim N\left(\mu=0, ~ \sigma^2=\Delta t_j \right)$,  ~~ $E[\Delta_{B_{t_j}}^2]=\left(\frac{t}{n}\right)$, ~~$E[\Delta_{B_{t_j}}^4]=3\left(\frac{t}{n}\right)^2$)\\
-% ~\\
-% $E[X_n^2] = 0 + \frac{2t^2}{n} \to 0$ as $n \rightarrow \infty$ and $P(|X_n|>\epsilon)=P\left(\left|\left(\sum_{j=1}^n\Delta_{B_{t_j}}^2\right)-t\right|>\epsilon\right)=0$ as $n\rightarrow \infty$ \\
-% Therefore,\\
-% $\sum_{j=1}^n\Delta_{B_{t_j}}^2$ converges to t, in probability, as $n\rightarrow \infty$\\
-% ~\\
-% ~\\
-% \textbf{Problem 3}\\
-% ~\\
-% Solve $dX_t = \alpha(\mu-X_t)dt + \sigma dB_t$\\
-% ~\\
-% ~\\
-% $Y(t,X_t) = e^{\alpha t} X_t$\\
-% $dY = Y_t dt + Y_{X_t} dX_t = \alpha e^{\alpha t} X_t dt + e^{\alpha t} dX_t$ \\
-% $= \alpha e^{\alpha t} X_t dt + e^{\alpha t} (\alpha(\mu-X_t)dt + \sigma dB_t)$ \\
-% $=  e^{\alpha t} \alpha \mu dt + e^{\alpha t}\sigma dB_t$ \\
-% ~\\
-% Comparing with Ito chain rule, \\
-% $Y_{B} = e^{\alpha t}\sigma  $, thus $Y_{BB} = 0  $\\
-% $Y_t + \frac{1}{2}Y_{BB} = Y_t=e^{\alpha t} \alpha \mu $\\
-% ~\\
-% That gives solution for Y\\
-% $Y = \mathrm{const} +  \int_{t'=0}^{t} Y_{t'} dt' + \int_{t'=0}^{t} Y_{B} dB(t')$\\
-% $=  \mathrm{const} + (e^{\alpha t} - 1) \mu + \int_{t'=0}^{t} \sigma e^{\alpha t'} dB(t') $\\
-% ~\\
-% Therefore,\\
-% $X_t = e^{-\alpha t} X = \mathrm{const} \cdot  e^{-\alpha t} +  (1 - e^{-\alpha t})\mu + \int_{t'=0}^{t} \sigma e^{\alpha (- t + t' )} dB(t') $\\
-
-
-% % \newpage
-% ~\\
-% ~\\
-% \textbf{Problem 4}\\
-% ~\\
-% \begin{figure}[H]
-%     \centering
-%     \includegraphics[width=0.3\linewidth]{BAC.png}
-%     \includegraphics[width=0.3\linewidth]{AMCR.png}
-%      \includegraphics[width=0.3\linewidth]{CPB.png}
-% \end{figure}
-
-
-% \begin{python}[linewidth=17cm, breaklines, xleftmargin=2cm, basicstyle=\tiny]
-% import pandas as pd 
-% import numpy as np 
-% import matplotlib.pyplot as plt
-% from multiprocessing import Pool 
-% from pathlib import Path
-% Path("./result").mkdir(exist_ok=True)
-% df = pd.read_csv(
-%     "open_clean.csv", index_col=[0], parse_dates=[0], 
-%     date_format="%Y-%m-%d %H:%M:%S%z")
-% df = df.apply(np.log)
-
-% def var(freq):
-%     idxs = np.floor(np.arange(0, len(df), freq))
-%     df_tmp = df.iloc[idxs].diff()
-%     return (df_tmp).pow(2).sum() 
-
-% oversample_ratio = 100
-% freqs = np.exp(np.arange(0, np.log(60 * 24 * 21), 1/oversample_ratio))
-% with Pool() as pool:
-%     df = pd.concat(dict(zip(freqs, pool.map(var, freqs)))).unstack()
-%     df.index = df.index.rename("Sampling interval (minute)")
-
-% def save_chart(i):
-%     plt.figure(figsize=(10,6))
-%     # df[i].plot(logx=False, title=i, alpha=0.2)
-%     df[i].rolling(oversample_ratio, min_periods=1).mean().plot(
-%         logx=False, marker="o", mfc='none', lw=0.1, ylim=(0,0.012),
-%         title=f"Realized Volatility {i}")
-%     plt.gcf().savefig(f"./result/{i}.png")
-%     plt.close()
-    
-% with Pool() as pool:
-%     _ = pool.map(save_chart, df.columns)
-% \end{python}
-
-
-
-% % \newpage
-% ~\\
-% ~\\
-% \textbf{Problem 5}\\
-% ~\\
-% \begin{figure}[H]
-%     \centering
-%     \includegraphics[width=0.6\linewidth]{BAC_PRV.png}\\
-%     \includegraphics[width=0.6\linewidth]{AMCR_PRV.png}\\
-%      \includegraphics[width=0.6\linewidth]{CPB_PRV.png}\\
-% \end{figure}
-
-
-
-% \begin{python}[linewidth=17cm, breaklines, xleftmargin=2cm, basicstyle=\tiny]
-% import pandas as pd 
-% import numpy as np 
-% import matplotlib.pyplot as plt
-% from multiprocessing import Pool 
-% from scipy.ndimage import convolve
-% from pathlib import Path
-% Path("./result").mkdir(exist_ok=True)
-% df = pd.read_csv(
-%     "open_clean.csv", index_col=[0], parse_dates=[0], 
-%     date_format="%Y-%m-%d %H:%M:%S%z")
-% df = df.apply(np.log)
-
-% def var(freq):
-%     idxs = np.floor(np.arange(0, len(df), freq))
-%     df_tmp = df.iloc[idxs].diff()
-%     return (df_tmp).pow(2).sum() 
-
-% def var_prv(freq):
-%     df_sampled = df.iloc[np.floor(np.arange(0, len(df), freq))]
-
-%     # Pre averaging
-%     n = np.ceil(390/freq)
-%     k = max(3, int(np.floor(np.sqrt(n))))
-%     kernel = np.minimum(np.linspace(0,1,k), np.linspace(1,0,k))
-%     kernel /= np.sqrt((np.square(kernel).sum())) # psi = 1
-%     df_pa = pd.DataFrame(convolve(df_sampled.diff().values, kernel[:,np.newaxis], mode="constant", cval=np.nan), index=df_sampled.index, columns=df_sampled.columns)
-%     df_pa_v = df_pa.pow(2).mean()
-
-%     # Noise adjustment term 
-%     df_noise = df_sampled.diff().pow(2).mean() * 0.5 * (np.square(np.diff(kernel)).sum())
-
-%     # Variance
-%     return df_pa_v - df_noise
-
-% oversample_ratio = 100
-% freqs = np.exp(np.arange(0, np.log(60 * 24 * 21), 1/oversample_ratio))
-
-% with Pool() as pool:
-%     df = pd.concat(dict(zip(freqs, pool.map(var, freqs)))).unstack()
-%     df.index = df.index.map(lambda x : np.log(390*21/x)).rename("Log Frequency = log(Sample per month)")
-%     df_prv = pd.concat(dict(zip(freqs, pool.map(var_prv, freqs)))).unstack()
-%     df_prv.index = df_prv.index.map(lambda x : np.log(390*21/x)).rename("Log Frequency = log(Sample per month)")
-
-% def save_chart(i):
-%     fig, axes = plt.subplots(ncols=2, figsize=(8,4))
-%     df[i].rolling(oversample_ratio, min_periods=1).mean().plot(
-%         logx=False, marker="o", mfc='none', lw=0.1, ylim=(0,0.012), ax=axes[0],
-%         title=f"Realized Volatility {i}",
-%         )
-%     df_prv[i].rolling(oversample_ratio, min_periods=1).mean().plot(
-%         logx=False, marker="o", mfc='none', lw=0.1, ylim=(0,0.012), ax=axes[1],
-%         title=f"Pre-Averaging Realized Volatility {i}"
-%         )
-%     fig.savefig(f"./result/{i}_PRV.png")
-%     plt.close()
-
-% with Pool() as pool:
-%     _ = pool.map(save_chart, df.columns)
-% \end{python}
-
-
-
-% \maketitle
-
-% \section{Introduction}
 
 \end{document}
